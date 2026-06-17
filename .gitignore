@@ -1,0 +1,21 @@
+# Build artifacts
+build/
+out/
+
+# vcpkg dependencies
+vcpkg_installed/
+vcpkg-manifest-install.log
+
+# Output files (PCD, images, JSON, CSV)
+output/
+*.pcd
+*.zip
+
+# IDE
+.vs/
+*.user
+.DS_Store
+Thumbs.db
+
+# Pointcloud data (large binary files)
+pointcloud/

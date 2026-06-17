@@ -1,0 +1,8 @@
+{
+  "name": "ground-removal",
+  "version": "1.0.0",
+  "dependencies": [
+    { "name": "pcl", "features": ["visualization"] },
+    "opencv4"
+  ]
+}
