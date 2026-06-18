@@ -221,6 +221,30 @@ src/
   - 无 P3: 2119 waypoints, 74.1% coverage, ~8,944m
 - 可视化从三色简化为双色 (蓝=环, 绿=填充)
 
+### v1.9.0 (2026-06-18) — 路径优化 + 坐标系修正
+
+- **DP 方向优化 (Pass B.5)**: P2 非边界 base 方向在 S 形排序后用 DP 选最优 {±X}
+  - P2 近边界 base 方向放置时固定 (pier-on-left 约束)，DP 不做修改
+  - O(N×K²) 复杂度，K≤2，~2100 航点下可忽略
+- **2-opt 转角惩罚 (Pass C)**: `total_len` 加入 `α×|heading_diff|` 项，α=0.4 m/rad
+  - 180° 掉头 ≈ 1.26m 惩罚，抑制区域间方向反转
+- **Dubins 区域间连接 (Pass D)**: 区域间 gap 用 Dubins 最短路径代替线性插值
+  - 转弯半径 1.5m，6 原语 (LSL/LSR/RSL/RSR/LRL/RLR) 选最短
+  - 不可行回退线性插值；区域内仍用线性 (baselink 间距小)
+- **基底几何模型修正**:
+  - baselink 长边随方向旋转 (X 轴行进 1.3m×0.85m，Y 轴行进 0.85m×1.3m)
+  - P1 步长从 1.17m 改为 1.4m (与 P2 一致)
+  - P2 近边界候选从 {±X} 扩展为全部 4 方向，按红色最多方位排优先级
+  - 可视化中 baselink 矩形也随方向旋转绘制
+- **坐标系修正 — 右手系 (X→右, Y↑上)**:
+  - `plan()` 入口 `cv::flip(wa, wa, 0)` 垂直翻转图像
+  - `world_to_px` / `px_to_world` Y 轴翻转: `pixel_y = (v_max - world.y) / pixel_size`
+  - P2 扫描范围适配翻转坐标
+  - `is_base_valid` / `base_dir_to_baselink` 像素矩形归一化 (Y 翻转后 tl>br 修正)
+  - `save_visualization` 输出图同步翻转
+- **数据对比**:
+  - 2,162 waypoints (P1 453 + P2 1,709), 73.7% coverage, ~9,107m
+
 ## License
 
 MIT
