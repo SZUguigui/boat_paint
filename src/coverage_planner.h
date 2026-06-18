@@ -80,17 +80,21 @@ private:
     cv::Point world_to_px(const cv::Point2f& w, float u_min, float v_min) const;
     cv::Point2f px_to_world(const cv::Point& px, float u_min, float v_min) const;
 
-    // 碰撞检测: base 矩形是否完全在白色区域内
+    // 碰撞检测: base 矩形是否完全在灰色可喷漆区域内
+    // 若 uncovered 非空, 还需检查矩形内像素均未被覆盖
     bool is_base_valid(const cv::Mat& work_area,
                        const cv::Point2f& base_center,
                        float bx, float by,
-                       float u_min, float v_min) const;
+                       float u_min, float v_min,
+                       const cv::Mat* uncovered = nullptr) const;
 
     // base 自适应扩展: 从初始尺寸向四方向扩展
+    // 若 uncovered 非空, 扩展时只允许进入未覆盖的灰色区域
     void expand_base(const cv::Mat& work_area,
                      const cv::Point2f& base_center,
                      float& out_x, float& out_y,
-                     float u_min, float v_min) const;
+                     float u_min, float v_min,
+                     const cv::Mat* uncovered = nullptr) const;
 
     // 检查某像素是否是桥墩侧障碍 (行进左侧不能有障碍)
     // 返回 true 表示该位置满足"墩在左"约束
