@@ -28,7 +28,6 @@
 //   PCL 1.13+ (io, features, filters, segmentation, search)
 //   OpenCV 4+  (可视化)
 //=============================================================================
-//这是一个测试，用于检测是否成功PULLandPUSH
 #include "ground_remover.h"
 #include "boundary_extractor.h"
 #include "line_fitter.h"
