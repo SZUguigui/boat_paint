@@ -103,11 +103,12 @@ private:
                          int direction,
                          float u_min, float v_min) const;
 
-    // 检查边界是否在 base 方向的左侧
+    // 检查边界是否在 base 方向的左侧 (check_right=true 时检查右侧)
     bool boundary_on_left(const cv::Mat& work_area,
                           const cv::Point2f& center,
                           float bx, float by, int dir,
-                          float u_min, float v_min) const;
+                          float u_min, float v_min,
+                          bool check_right = false) const;
 
     // baselink 方向从 base 方向推导
     bool base_dir_to_baselink(const cv::Mat& work_area,

@@ -180,14 +180,16 @@ static std::vector<cv::Point> sample_boundary_contours(
     return samples;
 }
 
-// ── Phase 1: 检查边界是否在 base 方向左侧 ──────────────
+// ── 检查边界是否在 base 方向左侧 ──────────────────────────
 // dir: 0=+X(左+Y), 1=-X(左-Y), 2=+Y(左-X), 3=-Y(左+X)
+// check_right=true: 检查右侧而非左侧
 bool CoveragePlanner::boundary_on_left(const cv::Mat& work_area,
                                         const cv::Point2f& center,
                                         float /*bx*/, float /*by*/, int dir,
-                                        float u_min, float v_min) const
+                                        float u_min, float v_min,
+                                        bool check_right) const
 {
-    float check_dist = params_.base_max + 0.6f;  // 需要覆盖 base 半径 + 到边界的距离
+    float check_dist = params_.base_max + 0.6f;
     int cols = work_area.cols, rows = work_area.rows;
 
     float step_x = 0, step_y = 0;
@@ -197,6 +199,7 @@ bool CoveragePlanner::boundary_on_left(const cv::Mat& work_area,
         case 2: step_x = -0.05f; break;  // +Y → 左=-X
         case 3: step_x = +0.05f; break;  // -Y → 左=+X
     }
+    if (check_right) { step_x = -step_x; step_y = -step_y; }
 
     for (float d = 0; d <= check_dist; d += 0.05f) {
         float sx = center.x + step_x * (d / 0.05f);
@@ -353,7 +356,7 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
                     int cx = x0 + static_cast<int>(frac * pier.width);
                     edges[0].centers.push_back(cv::Point(cx, y0 - off_px));
                 }
-                edges[0].dir = 0;  // +X → 左=+Y=向下=墩在下方 ✓
+                edges[0].dir = 1;  // -X ←, 墩在↓(右侧) → check_right
             }
             // 底边 (墩下方, base_y = y1 + off_px, 沿 X 均匀分布)
             {
@@ -364,7 +367,7 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
                     int cx = x0 + static_cast<int>(frac * pier.width);
                     edges[1].centers.push_back(cv::Point(cx, y1 + off_px));
                 }
-                edges[1].dir = 1;  // -X → 左=-Y=向上=墩在上方 ✓
+                edges[1].dir = 0;  // +X →, 墩在↑(右侧) → check_right
             }
             // 左边 (墩左侧, base_x = x0 - off_px, 沿 Y 均匀分布)
             {
@@ -375,7 +378,7 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
                     int cy = y0 + static_cast<int>(frac * pier.height);
                     edges[2].centers.push_back(cv::Point(x0 - off_px, cy));
                 }
-                edges[2].dir = 3;  // -Y → 左=+X=向右=墩在右侧 ✓
+                edges[2].dir = 2;  // +Y ↓, 墩在→(右侧) → check_right
             }
             // 右边 (墩右侧, base_x = x1 + off_px, 沿 Y 均匀分布)
             {
@@ -386,7 +389,7 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
                     int cy = y0 + static_cast<int>(frac * pier.height);
                     edges[3].centers.push_back(cv::Point(x1 + off_px, cy));
                 }
-                edges[3].dir = 2;  // +Y → 左=-X=向左=墩在左侧 ✓
+                edges[3].dir = 3;  // -Y ↑, 墩在←(右侧) → check_right
             }
 
             for (const auto& edge : edges) {
@@ -399,7 +402,7 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
                     float bx = 0.2f, by = 0.2f;
                     expand_base(wa, origin, bx, by, u_min, v_min, &uncovered);
                     if (bx < MIN_BASE_EDGE || by < MIN_BASE_EDGE) continue;
-                    if (!boundary_on_left(wa, origin, bx, by, edge.dir, u_min, v_min))
+                    if (!boundary_on_left(wa, origin, bx, by, edge.dir, u_min, v_min, true))
                         continue;
 
                     cv::Point2f bl;
@@ -587,11 +590,12 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
 
         struct RegionGroup {
             std::vector<Waypoint> ring;   // stripe==0 (P1 侧墩环)
-            std::vector<Waypoint> fill;   // stripe 1/2 (P2/P3 填充)
+            std::vector<Waypoint> fill;   // stripe 1 (P2 填充)
             std::vector<Waypoint> ordered;
             cv::Point2f centroid{0, 0};
             float x_min = 1e9f, x_max = -1e9f, y_min = 1e9f, y_max = -1e9f;
             cv::Point2f entry{0, 0}, exit{0, 0};
+            float internal_len = 0;       // 区域内 baselink 路径总长
         };
 
         std::map<int, RegionGroup> groups;  // 有序 → 确定性
@@ -645,68 +649,98 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
         }
 
         // ── Pass B: 区域内排序 ───────────────────────
+        auto internal_path_len = [](const std::vector<Waypoint>& v) {
+            float s = 0;
+            for (size_t i = 1; i < v.size(); ++i) {
+                float dx = v[i].baselink_center.x - v[i-1].baselink_center.x;
+                float dy = v[i].baselink_center.y - v[i-1].baselink_center.y;
+                s += std::sqrt(dx*dx + dy*dy);
+            }
+            return s;
+        };
+
         float band_w = params_.stripe_width;  // 1.17m, 每物理行一带
         for (auto& g : regs) {
-            // ring: 极角排序成环 (CCW), 每墩 ≤8 点
-            std::sort(g.ring.begin(), g.ring.end(),
-                [&](const Waypoint& a, const Waypoint& b) {
-                    return std::atan2(a.base_center.y - g.centroid.y,
-                                      a.base_center.x - g.centroid.x)
-                         < std::atan2(b.base_center.y - g.centroid.y,
-                                      b.base_center.x - g.centroid.x);
-                });
+            // ring: 极角排序成环 (CCW)
+            if (!g.ring.empty()) {
+                std::sort(g.ring.begin(), g.ring.end(),
+                    [&](const Waypoint& a, const Waypoint& b) {
+                        return std::atan2(a.base_center.y - g.centroid.y,
+                                          a.base_center.x - g.centroid.x)
+                             < std::atan2(b.base_center.y - g.centroid.y,
+                                          b.base_center.x - g.centroid.x);
+                    });
+            }
 
-            // fill: 按 bbox 选带轴 (短轴分带, 长轴扫) → 蛇形
-            bool bandY = (g.x_max - g.x_min) >= (g.y_max - g.y_min);
-            float axis_min = bandY ? g.y_min : g.x_min;
-            std::stable_sort(g.fill.begin(), g.fill.end(),
-                [&](const Waypoint& a, const Waypoint& b) {
-                    float ca = bandY ? a.baselink_center.y : a.baselink_center.x;
-                    float cb = bandY ? b.baselink_center.y : b.baselink_center.x;
-                    int ba = static_cast<int>(std::floor((ca - axis_min) / band_w));
-                    int bb = static_cast<int>(std::floor((cb - axis_min) / band_w));
-                    if (ba != bb) return ba < bb;
-                    float sa = bandY ? a.baselink_center.x : a.baselink_center.y;
-                    float sb = bandY ? b.baselink_center.x : b.baselink_center.y;
-                    if (std::fabs(sa - sb) > 1e-4f) return sa < sb;
-                    return a.direction < b.direction;
-                });
-            // 奇数带反向 (boustrophedon)
-            {
-                size_t i = 0;
-                while (i < g.fill.size()) {
-                    float ci = bandY ? g.fill[i].baselink_center.y
-                                     : g.fill[i].baselink_center.x;
-                    int bi = static_cast<int>(std::floor((ci - axis_min) / band_w));
-                    size_t j = i;
-                    while (j < g.fill.size()) {
-                        float cj = bandY ? g.fill[j].baselink_center.y
-                                         : g.fill[j].baselink_center.x;
-                        int bj = static_cast<int>(std::floor((cj - axis_min) / band_w));
-                        if (bj != bi) break;
-                        ++j;
+            // fill: 按 bbox 选带轴 → 蛇形 (用 base_center 分带)
+            if (!g.fill.empty()) {
+                bool bandY = (g.x_max - g.x_min) >= (g.y_max - g.y_min);
+                float axis_min = bandY ? g.y_min : g.x_min;
+                std::stable_sort(g.fill.begin(), g.fill.end(),
+                    [&](const Waypoint& a, const Waypoint& b) {
+                        float ca = bandY ? a.base_center.y : a.base_center.x;
+                        float cb = bandY ? b.base_center.y : b.base_center.x;
+                        int ba = static_cast<int>(std::floor((ca - axis_min) / band_w));
+                        int bb = static_cast<int>(std::floor((cb - axis_min) / band_w));
+                        if (ba != bb) return ba < bb;
+                        float sa = bandY ? a.base_center.x : a.base_center.y;
+                        float sb = bandY ? b.base_center.x : b.base_center.y;
+                        return sa < sb;
+                    });
+                // 奇数带反向 (boustrophedon)
+                {
+                    size_t i = 0;
+                    while (i < g.fill.size()) {
+                        float ci = bandY ? g.fill[i].base_center.y
+                                         : g.fill[i].base_center.x;
+                        int bi = static_cast<int>(std::floor((ci - axis_min) / band_w));
+                        size_t j = i;
+                        while (j < g.fill.size()) {
+                            float cj = bandY ? g.fill[j].base_center.y
+                                             : g.fill[j].base_center.x;
+                            int bj = static_cast<int>(std::floor((cj - axis_min) / band_w));
+                            if (bj != bi) break;
+                            ++j;
+                        }
+                        if (bi % 2 != 0)
+                            std::reverse(g.fill.begin() + i, g.fill.begin() + j);
+                        i = j;
                     }
-                    if (bi % 2 != 0)
-                        std::reverse(g.fill.begin() + i, g.fill.begin() + j);
-                    i = j;
                 }
             }
 
-            // ring 旋转使环起点靠近 fill 入口
+            // 拼接 ring + fill: 尝试 fill 正/反向, 选内部路径最短
             if (!g.ring.empty() && !g.fill.empty()) {
+                // ring 旋转: 最小化 ring_终点 → fill_起点 距离
                 cv::Point2f fin = g.fill.front().baselink_center;
-                size_t best = 0; float bd = 1e18f;
-                for (size_t k = 0; k < g.ring.size(); ++k) {
-                    float dx = g.ring[k].baselink_center.x - fin.x;
-                    float dy = g.ring[k].baselink_center.y - fin.y;
+                size_t n = g.ring.size();
+                size_t best_r = 0; float bd = 1e18f;
+                for (size_t k = 0; k < n; ++k) {
+                    // ring 终点 = ring[(k+n-1)%n] (k 是起点, 前一个 CCW 点是终点)
+                    size_t ek = (k + n - 1) % n;
+                    float dx = g.ring[ek].baselink_center.x - fin.x;
+                    float dy = g.ring[ek].baselink_center.y - fin.y;
                     float d = dx * dx + dy * dy;
-                    if (d < bd) { bd = d; best = k; }
+                    if (d < bd) { bd = d; best_r = k; }
                 }
-                std::rotate(g.ring.begin(), g.ring.begin() + best, g.ring.end());
+                std::rotate(g.ring.begin(), g.ring.begin() + best_r, g.ring.end());
             }
 
-            g.ordered = g.ring;
-            g.ordered.insert(g.ordered.end(), g.fill.begin(), g.fill.end());
+            {
+                float best_len = 1e18f;
+                std::vector<Waypoint> best_seq;
+                for (bool fill_rev : {false, true}) {
+                    std::vector<Waypoint> seq = g.ring;
+                    auto f = g.fill;
+                    if (fill_rev) std::reverse(f.begin(), f.end());
+                    seq.insert(seq.end(), f.begin(), f.end());
+                    float len = internal_path_len(seq);
+                    if (len < best_len) { best_len = len; best_seq = std::move(seq); }
+                }
+                g.ordered = std::move(best_seq);
+                g.internal_len = best_len;
+            }
+
             if (!g.ordered.empty()) {
                 g.entry = g.ordered.front().baselink_center;
                 g.exit  = g.ordered.back().baselink_center;
@@ -755,23 +789,26 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
                 return flip[order[idx]] ? regs[order[idx]].entry
                                         : regs[order[idx]].exit;
             };
-            auto connector_len = [&]() {
+            auto total_len = [&]() {
                 float s = 0;
-                for (int i = 1; i < R; ++i) {
-                    cv::Point2f a = seg_end(i - 1), b = seg_start(i);
-                    s += std::hypot(a.x - b.x, a.y - b.y);
+                for (int i = 0; i < R; ++i) {
+                    s += regs[order[i]].internal_len;
+                    if (i > 0) {
+                        cv::Point2f a = seg_end(i - 1), b = seg_start(i);
+                        s += std::hypot(a.x - b.x, a.y - b.y);
+                    }
                 }
                 return s;
             };
             // 2-opt: 反转区间(含朝向翻转), ≤4 趟
             for (int pass = 0; pass < 4; ++pass) {
                 bool improved = false;
-                float cur_len = connector_len();
+                float cur_len = total_len();
                 for (int i = 0; i < R - 1; ++i) {
                     for (int k = i + 1; k < R; ++k) {
                         std::reverse(order.begin() + i, order.begin() + k + 1);
                         for (int t = i; t <= k; ++t) flip[order[t]] = !flip[order[t]];
-                        float nl = connector_len();
+                        float nl = total_len();
                         if (nl + 1e-3f < cur_len) {
                             cur_len = nl; improved = true;
                         } else {
