@@ -19,8 +19,9 @@ struct Waypoint {
     cv::Point2f base_center;      // 喷漆中心 (世界坐标, m)
     float base_x_size;            // base X 方向实际覆盖 (m)
     float base_y_size;            // base Y 方向实际覆盖 (m)
-    int stripe;                   // 所属条带
-    int direction;                // 行进方向: +1 = +X, -1 = -X
+    int stripe;                   // 所属条带 / phase (0=P1边界, 1=P2内部, 2=P3填缝)
+    int direction;                // base 行进方向: 0=+X, 1=-X, 2=+Y, 3=-Y
+    int region = -1;              // 连通灰色区域标号 (后处理排序时赋值)
 };
 
 // ── 规划结果 ────────────────────────────────────────────
@@ -97,9 +98,21 @@ private:
                      const cv::Mat* uncovered = nullptr) const;
 
     // 检查某像素是否是桥墩侧障碍 (行进左侧不能有障碍)
-    // 返回 true 表示该位置满足"墩在左"约束
     bool check_pier_left(const cv::Mat& work_area,
                          const cv::Point2f& baselink_center,
                          int direction,
                          float u_min, float v_min) const;
+
+    // 检查边界是否在 base 方向的左侧
+    bool boundary_on_left(const cv::Mat& work_area,
+                          const cv::Point2f& center,
+                          float bx, float by, int dir,
+                          float u_min, float v_min) const;
+
+    // baselink 方向从 base 方向推导
+    bool base_dir_to_baselink(const cv::Mat& work_area,
+                               const cv::Point2f& base_center,
+                               float bx, float by, int base_dir,
+                               float u_min, float v_min,
+                               cv::Point2f& out_bl) const;
 };
