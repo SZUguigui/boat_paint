@@ -5,7 +5,10 @@
 //   baselink (1.3m X × 0.85m Y)  ←0.616m→  base (max 1.17m × 1.17m)
 //   中心点刚性连接: base_center = baselink_center + (0.616, 0)
 //   baselink 可在工作区外, base 必须在工作区内
-//   两者不旋转, 始终轴对齐
+//   小车长边始终与行进方向平行 (随 direction 旋转)
+//
+// 坐标系: 右手系 (X→右, Y↑上), 俯视点云
+//   入口处 cv::flip(wa, wa, 0) 翻转图像, 使图像 Y↑=世界 Y↑
 //=============================================================================
 #pragma once
 #include <opencv2/core.hpp>
@@ -51,6 +54,13 @@ struct CoverageParams {
 
     // 分辨率
     float pixel_size = 0.01f;       // 与栅格图一致
+
+    // Dubins 参数
+    float dubins_turning_radius = 1.5f;  // 最小转弯半径 (m)
+    float dubins_sample_dist = 0.1f;     // 路径采样分辨率 (m)
+
+    // DP / 2-opt
+    float turn_penalty_weight = 0.4f;    // 转角惩罚权重 (m/rad)
 };
 
 // ── 规划器 ──────────────────────────────────────────────
@@ -76,8 +86,9 @@ public:
 
 private:
     CoverageParams params_;
+    int img_rows_ = 0;  // 运行时: work_area.rows
 
-    // 像素 ↔ 世界
+    // 像素 ↔ 世界 (Y 翻转: pixel_y=0 ↔ 世界 Y_max)
     cv::Point world_to_px(const cv::Point2f& w, float u_min, float v_min) const;
     cv::Point2f px_to_world(const cv::Point& px, float u_min, float v_min) const;
 
@@ -116,4 +127,14 @@ private:
                                float bx, float by, int base_dir,
                                float u_min, float v_min,
                                cv::Point2f& out_bl) const;
+
+    // 纯几何偏移: base_center + direction → baselink 中心 (不做碰撞检测)
+    cv::Point2f baselink_for_direction(const cv::Point2f& base_center,
+                                       int dir) const;
+
+    // Dubins 最短路径: 返回采样后的离散路径点
+    static std::vector<cv::Point2f> dubins_shortest_path(
+        cv::Point2f start_pos, float start_heading,
+        cv::Point2f end_pos,   float end_heading,
+        float turning_radius, float sample_dist);
 };
