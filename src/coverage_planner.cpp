@@ -1,9 +1,9 @@
 //=============================================================================
-// coverage_planner.cpp — Three-Phase Coverage Path Planning V6
+// coverage_planner.cpp — Two-Phase Coverage Path Planning V8
 //
-// Phase 1: 边界优先 — 沿红色边界带放置, 方向保证边界在左侧
+// Phase 1: 边界环 — 沿侧墩 AABB 四边平铺, 方向保证边界在左侧
 // Phase 2: 内部滑动窗口 — X 轴方向规则填充
-// Phase 3: MER 最大空矩形 — 面积优先填缝
+// 后处理: 连通区域聚类 + 区域内蛇形 + 区域间 2-opt
 //=============================================================================
 #include "coverage_planner.h"
 #include <opencv2/imgproc.hpp>
@@ -555,112 +555,7 @@ CoverageResult CoveragePlanner::plan(const cv::Mat& work_area,
         std::cout << "Phase 2: " << p2_count << " waypoints\n";
     }
 
-    // ══════════════════════════════════════════════════
-    // Phase 3: MER 最大空矩形 (黄色, X 轴方向)
-    // ══════════════════════════════════════════════════
-    {
-        int uncovered_remaining = cv::countNonZero(uncovered);
-        if (uncovered_remaining > 0)
-            std::cout << "Phase 3: " << uncovered_remaining << " uncovered pixels remain\n";
-
-        int p3_iter = 0, p3_count = 0;
-        const int P3_MAX_ITERS = 100;
-
-        while (uncovered_remaining > 0 && p3_iter < P3_MAX_ITERS) {
-            p3_iter++;
-
-            int u_min_x = cols, u_max_x = 0, u_min_y = rows, u_max_y = 0;
-            for (int r = 0; r < rows; ++r) {
-                const uint8_t* urow = uncovered.ptr<uint8_t>(r);
-                for (int c = 0; c < cols; ++c) {
-                    if (urow[c] > 0) {
-                        u_min_x = std::min(u_min_x, c); u_max_x = std::max(u_max_x, c);
-                        u_min_y = std::min(u_min_y, r); u_max_y = std::max(u_max_y, r);
-                    }
-                }
-            }
-            if (u_min_x > u_max_x) break;
-
-            int bb_w = u_max_x - u_min_x + 1, bb_h = u_max_y - u_min_y + 1;
-            int scan_step = std::max(3, static_cast<int>(
-                std::sqrt(static_cast<double>(bb_w) * bb_h / 5000.0)));
-
-            // 选面积最大者
-            int best_x = -1, best_y = -1;
-            float best_area = 0, best_bx = 0, best_by = 0;
-
-            for (int sy = u_min_y; sy <= u_max_y; sy += scan_step) {
-                const uint8_t* urow = uncovered.ptr<uint8_t>(sy);
-                for (int sx = u_min_x; sx <= u_max_x; sx += scan_step) {
-                    if (urow[sx] == 0) continue;
-                    cv::Point2f bc = px_to_world({sx, sy}, u_min, v_min);
-                    float bx = 0.2f, by = 0.2f;
-                    expand_base(wa, bc, bx, by, u_min, v_min, &uncovered);
-                    float area = bx * by;
-                    if (area > best_area) {
-                        best_area = area; best_x = sx; best_y = sy;
-                        best_bx = bx; best_by = by;
-                    }
-                }
-            }
-            if (best_area < MIN_BASE_AREA) break;
-
-            cv::Point2f bc = px_to_world({best_x, best_y}, u_min, v_min);
-            int base_dir = (p3_iter % 2 == 0) ? 0 : 1;
-
-            cv::Point2f bl;
-            bool dir_ok3 = false;
-            for (int try_dir : {base_dir, (base_dir == 0 ? 1 : 0)}) {
-                // 近边界时强制 boundary_on_left
-                bool near_red3 = false;
-                int ck3 = static_cast<int>(0.6f / params_.pixel_size);
-                cv::Point bpx = world_to_px(bc, u_min, v_min);
-                for (int rr = std::max(0, bpx.y - ck3);
-                     rr <= std::min(rows - 1, bpx.y + ck3) && !near_red3; ++rr)
-                    for (int cc = std::max(0, bpx.x - ck3);
-                         cc <= std::min(cols - 1, bpx.x + ck3) && !near_red3; ++cc)
-                        if (wa.at<cv::Vec3b>(rr, cc) == cv::Vec3b(0, 0, 255))
-                            near_red3 = true;
-                if (near_red3 && !boundary_on_left(wa, bc, best_bx, best_by, try_dir, u_min, v_min))
-                    continue;
-                if (!base_dir_to_baselink(wa, bc, best_bx, best_by, try_dir, u_min, v_min, bl))
-                    continue;
-                base_dir = try_dir;
-                dir_ok3 = true;
-                break;
-            }
-            if (!dir_ok3) {
-                uncovered.at<uint8_t>(best_y, best_x) = 0;
-                continue;
-            }
-
-            Waypoint wp;
-            wp.id = wp_id++;
-            wp.base_center = bc;
-            wp.baselink_center = bl;
-            wp.base_x_size = best_bx;
-            wp.base_y_size = best_by;
-            wp.stripe = 2;   // Phase 3 = 黄色
-            wp.direction = base_dir;
-            waypoints.push_back(wp);
-            p3_count++;
-
-            int hx = static_cast<int>(best_bx / 2 / params_.pixel_size);
-            int hy = static_cast<int>(best_by / 2 / params_.pixel_size);
-            cv::Rect roi(best_x - hx, best_y - hy, hx * 2, hy * 2);
-            roi &= cv::Rect(0, 0, cols, rows);
-            for (int rr = roi.y; rr < roi.y + roi.height; ++rr)
-                for (int cc = roi.x; cc < roi.x + roi.width; ++cc)
-                    if (wa.at<cv::Vec3b>(rr, cc) == cv::Vec3b(128, 128, 128))
-                        { uncovered.at<uint8_t>(rr, cc) = 0; covered.at<uint8_t>(rr, cc) = 255; }
-
-            uncovered_remaining = cv::countNonZero(uncovered);
-            if (p3_iter % 5 == 0 || uncovered_remaining == 0)
-                std::cout << "  MER iter " << p3_iter << ": +" << p3_count
-                          << " waypoints, " << uncovered_remaining << " left\n" << std::flush;
-        }
-        std::cout << "Phase 3: " << p3_count << " waypoints\n";
-    }
+    // Phase 3: MER disabled for comparison
 
     std::cout << "Total: " << wp_id << " waypoints\n";
 
