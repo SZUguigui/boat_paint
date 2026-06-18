@@ -242,8 +242,10 @@ src/
   - P2 扫描范围适配翻转坐标
   - `is_base_valid` / `base_dir_to_baselink` 像素矩形归一化 (Y 翻转后 tl>br 修正)
   - `save_visualization` 输出图同步翻转
+- **expand_base 改进**: 保留 `max_dim=1.17m` (机械臂硬上限)
+  - 步进扩展后增加最终 `max_dim` 直达尝试，解决 step 量化导致未达上限的问题
 - **数据对比**:
-  - 2,162 waypoints (P1 453 + P2 1,709), 73.7% coverage, ~9,107m
+  - 2,153 waypoints (P1 452 + P2 1,701), 74.75% coverage, ~9,132m
 
 ## License
 

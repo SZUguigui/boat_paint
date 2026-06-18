@@ -96,6 +96,7 @@ bool CoveragePlanner::is_base_valid(const cv::Mat& work_area,
 }
 
 // ── base 自适应扩展 ────────────────────────────────────
+// 对称扩展至 max_dim (机械臂运动范围上限), 从当前尺寸逐步增大
 void CoveragePlanner::expand_base(const cv::Mat& work_area,
                                    const cv::Point2f& base_center,
                                    float& out_x, float& out_y,
@@ -103,17 +104,26 @@ void CoveragePlanner::expand_base(const cv::Mat& work_area,
                                    const cv::Mat* uncovered) const
 {
     float step = 0.05f;
-    float max_dim = params_.base_max;
+    float max_dim = params_.base_max;  // 机械臂硬上限 1.17m
     bool changed = true;
     while (changed) {
         changed = false;
-        if (out_x + step * 2 <= max_dim &&
+        if (out_x + step * 2 <= max_dim + 1e-4f &&
             is_base_valid(work_area, base_center, out_x + step * 2, out_y, u_min, v_min, uncovered)) {
             out_x += step * 2; changed = true;
         }
-        if (out_y + step * 2 <= max_dim &&
+        // 最后一次: 若未到 max_dim 但差一点, 直接试 max_dim
+        if (!changed && out_x < max_dim - 1e-4f &&
+            is_base_valid(work_area, base_center, max_dim, out_y, u_min, v_min, uncovered)) {
+            out_x = max_dim; changed = true;
+        }
+        if (out_y + step * 2 <= max_dim + 1e-4f &&
             is_base_valid(work_area, base_center, out_x, out_y + step * 2, u_min, v_min, uncovered)) {
             out_y += step * 2; changed = true;
+        }
+        if (!changed && out_y < max_dim - 1e-4f &&
+            is_base_valid(work_area, base_center, out_x, max_dim, u_min, v_min, uncovered)) {
+            out_y = max_dim; changed = true;
         }
     }
 }
